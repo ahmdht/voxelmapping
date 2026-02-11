@@ -1,0 +1,38 @@
+# Docker ignore file for VoxelMapping
+
+# Build artifacts
+build/
+*.o
+*.so
+*.a
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Data/captures (mount as volume instead)
+captures/
+data/
+*.npy
+*.ply
+*.pcd
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

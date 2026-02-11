@@ -1,0 +1,59 @@
+version: '3.8'
+
+# Diana API path on host
+x-diana-api-path: &diana-api-path
+  /home/ahmad.hoteit/.conan/data/diana-api/2.18.1/ar/stable/package/aeddd718e2f218413aa0b9078e615c0fca8986f5/lib/python3/site-packages/diana_api
+
+services:
+  voxelmapping:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: voxelmapping:latest
+    container_name: voxelmapping
+    
+    # Network mode for camera discovery + robot communication
+    network_mode: host
+    
+    # Privileged mode for USB/camera access
+    privileged: true
+    
+    # Mount volumes - NO COPY, just mount source files
+    volumes:
+      # === SOURCE CODE (mounted, not copied) ===
+      - ./CMakeLists.txt:/app/CMakeLists.txt:ro
+      - ./include:/app/include:ro
+      - ./src:/app/src:ro
+      - ./python:/app/python:ro
+      - ./tests:/app/tests:ro
+      - ./interactive_capture_mecheye.py:/app/interactive_capture_mecheye.py:ro
+      
+      # === BUILD OUTPUT (read-write) ===
+      - ./build:/app/build
+      
+      # === CAPTURES OUTPUT ===
+      - ./captures:/app/captures
+      
+      # === DIANA ROBOT API ===
+      - /home/ahmad.hoteit/.conan/data/diana-api/2.18.1/ar/stable/package/aeddd718e2f218413aa0b9078e615c0fca8986f5/lib/python3/site-packages/diana_api:/diana_api:ro
+      
+      # === DEVICE ACCESS ===
+      - /dev:/dev
+      
+      # === X11 FOR VISUALIZATION ===
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    
+    # Environment variables
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - PYTHONPATH=/app/build:/app/python:/diana_api
+      - LD_LIBRARY_PATH=/opt/mech-mind/mech-eye-sdk/lib
+    
+    # Interactive shell
+    stdin_open: true
+    tty: true
+    
+    # Working directory
+    working_dir: /app
+    
+    command: bash
