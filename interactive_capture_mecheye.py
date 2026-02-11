@@ -87,6 +87,161 @@ def compute_camera_pose_in_base(T_base_ee, T_cam_ee):
     return T_base_cam.astype(np.float32)
 
 
+def run_calibration_verification(camera, robot_ip, n_frames=5):
+    """
+    Capture multiple frames at the same robot pose to verify calibration.
+    
+    If the robot is stationary and scene is static, all point clouds should
+    align perfectly in camera frame. Large deviations indicate:
+    - Camera noise/instability
+    - Scene movement
+    - Calibration issues
+    
+    Returns True if calibration appears valid, False otherwise.
+    """
+    print("\n" + "=" * 60)
+    print("CALIBRATION VERIFICATION MODE")
+    print("=" * 60)
+    print(f"\nThis will capture {n_frames} frames at the SAME robot pose.")
+    print("Keep the robot and scene completely STATIC during capture.")
+    print("\nPress ENTER when ready...")
+    input()
+    
+    # Get current robot pose
+    robot_pose = None
+    if DIANA_AVAILABLE:
+        try:
+            pose = [0.0] * 6
+            DianaApi.getTcpPos(pose, ipAddress=robot_ip)
+            robot_pose = pose
+            print(f"Robot pose: {[round(p, 4) for p in pose]}")
+        except Exception as e:
+            print(f"[WARN] Could not get robot pose: {e}")
+    
+    clouds = []
+    centroids = []
+    
+    print(f"\nCapturing {n_frames} frames...")
+    for i in range(n_frames):
+        frame_3d = Frame3D()
+        status = camera.capture_3d(frame_3d)
+        if not status.is_ok():
+            print(f"  Frame {i+1}: FAILED")
+            continue
+        
+        point_cloud = frame_3d.get_untextured_point_cloud()
+        points = np.array(point_cloud.data(), dtype=np.float32).reshape(-1, 3)
+        points = points / 1000.0  # mm to meters
+        
+        # Filter valid points
+        valid = (np.abs(points).sum(axis=1) > 0) & (np.abs(points).sum(axis=1) < 10)
+        valid_points = points[valid]
+        
+        centroid = valid_points.mean(axis=0)
+        clouds.append(valid_points)
+        centroids.append(centroid)
+        
+        print(f"  Frame {i+1}: {valid_points.shape[0]} valid pts, centroid={centroid.round(4)}")
+        time.sleep(0.5)  # Small delay between captures
+    
+    if len(centroids) < 2:
+        print("\n[ERROR] Not enough valid frames captured.")
+        return False
+    
+    centroids = np.array(centroids)
+    
+    # Compute statistics
+    print("\n" + "-" * 60)
+    print("VERIFICATION RESULTS")
+    print("-" * 60)
+    
+    mean_centroid = centroids.mean(axis=0)
+    std_centroid = centroids.std(axis=0)
+    max_deviation = np.abs(centroids - mean_centroid).max(axis=0)
+    
+    print(f"\nMean centroid:    [{mean_centroid[0]:.4f}, {mean_centroid[1]:.4f}, {mean_centroid[2]:.4f}]")
+    print(f"Std deviation:    [{std_centroid[0]:.4f}, {std_centroid[1]:.4f}, {std_centroid[2]:.4f}]")
+    print(f"Max deviation:    [{max_deviation[0]:.4f}, {max_deviation[1]:.4f}, {max_deviation[2]:.4f}]")
+    
+    # Compute pairwise distances
+    pairwise_dists = []
+    for i in range(len(centroids)):
+        for j in range(i+1, len(centroids)):
+            d = np.linalg.norm(centroids[i] - centroids[j])
+            pairwise_dists.append(d)
+    
+    max_pair_dist = max(pairwise_dists)
+    mean_pair_dist = np.mean(pairwise_dists)
+    
+    print(f"\nPairwise centroid distances:")
+    print(f"  Mean: {mean_pair_dist*1000:.2f} mm")
+    print(f"  Max:  {max_pair_dist*1000:.2f} mm")
+    
+    # Verdict
+    print("\n" + "-" * 60)
+    if max_pair_dist < 0.005:  # < 5mm
+        print("✅ EXCELLENT: Camera captures are highly consistent (<5mm)")
+        print("   Hand-eye calibration can proceed with confidence.")
+        is_valid = True
+    elif max_pair_dist < 0.015:  # < 15mm
+        print("⚠️  ACCEPTABLE: Camera captures have minor variation (5-15mm)")
+        print("   Results may have some noise but should be usable.")
+        is_valid = True
+    elif max_pair_dist < 0.030:  # < 30mm
+        print("⚠️  MARGINAL: Camera captures vary significantly (15-30mm)")
+        print("   Consider: camera warm-up, scene stability, lighting.")
+        is_valid = True
+    else:
+        print("❌ POOR: Camera captures are inconsistent (>30mm)")
+        print("   Possible issues:")
+        print("   - Camera not warmed up (run for 10-15 min)")
+        print("   - Scene is moving")
+        print("   - Depth settings too aggressive")
+        print("   - Camera hardware issue")
+        is_valid = False
+    print("-" * 60)
+    
+    # Test transform consistency if robot pose available
+    if robot_pose is not None and len(clouds) >= 2:
+        print("\nTesting TRANSFORMED cloud consistency...")
+        T_base_ee = pose_to_matrix(robot_pose)
+        T_base_cam = compute_camera_pose_in_base(T_base_ee, EXTRINSICS_CAM_EE)
+        
+        transformed_centroids = []
+        for pts in clouds:
+            pts_homo = np.hstack([pts, np.ones((pts.shape[0], 1))])
+            pts_base = (T_base_cam @ pts_homo.T).T[:, :3]
+            transformed_centroids.append(pts_base.mean(axis=0))
+        
+        transformed_centroids = np.array(transformed_centroids)
+        trans_std = transformed_centroids.std(axis=0)
+        trans_max_dev = np.abs(transformed_centroids - transformed_centroids.mean(axis=0)).max(axis=0)
+        
+        print(f"Transformed std:     [{trans_std[0]:.4f}, {trans_std[1]:.4f}, {trans_std[2]:.4f}]")
+        print(f"Transformed max dev: [{trans_max_dev[0]:.4f}, {trans_max_dev[1]:.4f}, {trans_max_dev[2]:.4f}]")
+    
+    return is_valid
+    T_base_cam = T_base_ee @ T_ee_cam
+    return T_base_cam.astype(np.float32)
+
+
+def print_camera_info(camera_info):
+    """Print camera information."""
+    if hasattr(camera_info, 'model'):
+        print("  Model:", camera_info.model)
+    if hasattr(camera_info, 'serial_number'):
+        print("  Serial Number:", camera_info.serial_number)
+    if hasattr(camera_info, 'ip_address'):
+        print("  IP Address:", camera_info.ip_address)
+    if hasattr(camera_info, 'subnet_mask'):
+        print("  IP Subnet Mask:", camera_info.subnet_mask)
+    if hasattr(camera_info, 'ip_gateway'):
+        print("  IP Gateway:", camera_info.ip_gateway)
+    if hasattr(camera_info, 'firmware_version'):
+        print("  Firmware Version:", camera_info.firmware_version)
+    print()
+
+
 def discover_and_connect(camera, index=None):
     print("Discovering all available cameras...")
     camera_infos = Camera.discover_cameras()
@@ -229,6 +384,10 @@ def main():
     parser.add_argument("--ip", type=str, default="192.168.10.75", help="Diana robot IP address")
     parser.add_argument("--voxel-size", type=float, default=0.005, help="Voxel size in meters (default: 5mm)")
     parser.add_argument("--no-voxel", action="store_true", help="Disable real-time voxel mapping")
+    parser.add_argument("--verify-calibration", action="store_true", 
+                        help="Run calibration verification mode (captures N frames at same pose)")
+    parser.add_argument("--verify-frames", type=int, default=5, 
+                        help="Number of frames for calibration verification (default: 5)")
     args = parser.parse_args()
 
     print("\n=== SAFETY NOTICE ===")
@@ -248,6 +407,15 @@ def main():
         return
 
     robot_connected = connect_robot(args.ip)
+
+    # Calibration verification mode
+    if args.verify_calibration:
+        is_valid = run_calibration_verification(camera, args.ip, args.verify_frames)
+        if robot_connected:
+            disconnect_robot(args.ip)
+        camera.disconnect()
+        print("\nDisconnected from the camera successfully.")
+        return
 
     # Initialize voxel mapping
     voxel_map = None

@@ -91,13 +91,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     libxext6 \
     libsm6 \
+    # Network utilities (required by Mech-Eye SDK)
+    iputils-ping \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================================
 # PYTHON PACKAGES
 # ============================================================================
+# Pin numpy<2 to avoid ABI mismatch with compiled extensions (cv2, etc.)
 RUN pip3 install --no-cache-dir \
-    numpy \
+    'numpy<2' \
     scipy \
     pytest \
     open3d \
@@ -142,8 +146,8 @@ RUN mkdir -p /app/build /app/captures
 # ============================================================================
 # ENVIRONMENT SETUP
 # ============================================================================
-ENV PYTHONPATH="/app/build:/app/python:/diana_api:${PYTHONPATH}"
-ENV LD_LIBRARY_PATH="/opt/mech-mind/mech-eye-sdk/lib:${LD_LIBRARY_PATH}"
+ENV PYTHONPATH="/app/build:/app/python:/diana_api"
+ENV LD_LIBRARY_PATH="/diana_lib:/opt/mech-mind/mech-eye-sdk/lib:/usr/local/lib"
 
 WORKDIR /app
 

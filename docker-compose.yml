@@ -1,8 +1,8 @@
 version: '3.8'
 
-# Diana API path on host
-x-diana-api-path: &diana-api-path
-  /home/ahmad.hoteit/.conan/data/diana-api/2.18.1/ar/stable/package/aeddd718e2f218413aa0b9078e615c0fca8986f5/lib/python3/site-packages/diana_api
+# Diana API paths on host
+x-diana-base: &diana-base
+  /home/ahmad.hoteit/.conan/data/diana-api/2.18.1/ar/stable/package/aeddd718e2f218413aa0b9078e615c0fca8986f5
 
 services:
   voxelmapping:
@@ -34,8 +34,14 @@ services:
       # === CAPTURES OUTPUT ===
       - ./captures:/app/captures
       
-      # === DIANA ROBOT API ===
+      # === DIANA ROBOT API (mount entire lib dir so symlinks resolve) ===
+      - /home/ahmad.hoteit/.conan/data/diana-api/2.18.1/ar/stable/package/aeddd718e2f218413aa0b9078e615c0fca8986f5/lib:/diana_lib:ro
       - /home/ahmad.hoteit/.conan/data/diana-api/2.18.1/ar/stable/package/aeddd718e2f218413aa0b9078e615c0fca8986f5/lib/python3/site-packages/diana_api:/diana_api:ro
+      # DianaApi.py expects libDianaApi.so in same directory
+      - /home/ahmad.hoteit/.conan/data/diana-api/2.18.1/ar/stable/package/aeddd718e2f218413aa0b9078e615c0fca8986f5/lib/libDianaApi.so:/diana_api/libDianaApi.so:ro
+      
+      # === MECH-EYE SDK FROM HOST ===
+      - /opt/mech-mind/mech-eye-sdk:/opt/mech-mind/mech-eye-sdk:ro
       
       # === DEVICE ACCESS ===
       - /dev:/dev
@@ -47,7 +53,7 @@ services:
     environment:
       - DISPLAY=${DISPLAY:-:0}
       - PYTHONPATH=/app/build:/app/python:/diana_api
-      - LD_LIBRARY_PATH=/opt/mech-mind/mech-eye-sdk/lib
+      - LD_LIBRARY_PATH=/diana_lib:/opt/mech-mind/mech-eye-sdk/lib:/usr/local/lib
     
     # Interactive shell
     stdin_open: true

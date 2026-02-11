@@ -38,9 +38,20 @@ PYBIND11_MODULE(voxel_mapping_py, m) {
     py::class_<VoxelMapping>(m, "VoxelMapping")
         .def(py::init<float>(), py::arg("voxel_size"))
         .def("register_cloud",
-             [](VoxelMapping& self, const py::array_t<float>& points, const Eigen::Matrix4f& transform) {
+             [](VoxelMapping& self,
+                const py::array_t<float, py::array::c_style | py::array::forcecast>& points,
+                const py::array_t<float, py::array::c_style | py::array::forcecast>& transform) {
                  auto cloud = numpy_to_cloud(points);
-                 self.registerCloud(cloud, transform);
+
+                 // Validate transform shape and map to Eigen::Matrix4f (row-major)
+                 const auto tbuf = transform.request();
+                 if (tbuf.ndim != 2 || tbuf.shape[0] != 4 || tbuf.shape[1] != 4) {
+                     throw std::runtime_error("transform must have shape (4,4)");
+                 }
+                 const float* tdata = static_cast<const float*>(tbuf.ptr);
+                 Eigen::Map<const Eigen::Matrix<float, 4, 4, Eigen::RowMajor>> tf_map(tdata);
+
+                 self.registerCloud(cloud, tf_map);
              },
              py::arg("points"), py::arg("transform"),
              "Register a cloud (Nx3 float32 array) with a 4x4 transform")
