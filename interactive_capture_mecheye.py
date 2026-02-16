@@ -60,14 +60,24 @@ EXTRINSICS_CAM_EE = np.array([
 ], dtype=np.float32)
 
 
-def pose_to_matrix(pose):
+def pose_to_matrix(pose, robot_ip=None):
     """
     Convert robot pose [x, y, z, rx, ry, rz] (meters, radians) to 4x4 transform.
-    Uses ZYX Euler angles (yaw-pitch-roll) convention.
+    Uses DianaApi.pose2Homogeneous for correct conversion.
+    Falls back to XYZ extrinsic Euler if DianaApi not available.
     """
+    if DIANA_AVAILABLE:
+        try:
+            # Use Diana's native conversion (flat 16-element output)
+            T_flat = [0.0] * 16
+            DianaApi.pose2Homogeneous(pose, T_flat)
+            return np.array(T_flat, dtype=np.float32).reshape(4, 4)
+        except Exception as e:
+            print(f"[WARN] DianaApi.pose2Homogeneous failed: {e}, using fallback")
+    
+    # Fallback: XYZ extrinsic Euler (equivalent to xyz lowercase in scipy)
     x, y, z, rx, ry, rz = pose
-    # Diana uses ZYX intrinsic Euler angles (common for robots)
-    rot = Rotation.from_euler('ZYX', [rz, ry, rx], degrees=False)
+    rot = Rotation.from_euler('xyz', [rx, ry, rz], degrees=False)
     T = np.eye(4, dtype=np.float32)
     T[:3, :3] = rot.as_matrix().astype(np.float32)
     T[:3, 3] = [x, y, z]
@@ -204,7 +214,7 @@ def run_calibration_verification(camera, robot_ip, n_frames=5):
     # Test transform consistency if robot pose available
     if robot_pose is not None and len(clouds) >= 2:
         print("\nTesting TRANSFORMED cloud consistency...")
-        T_base_ee = pose_to_matrix(robot_pose)
+        T_base_ee = pose_to_matrix(robot_pose, robot_ip)
         T_base_cam = compute_camera_pose_in_base(T_base_ee, EXTRINSICS_CAM_EE)
         
         transformed_centroids = []
@@ -354,6 +364,7 @@ def connect_robot(robot_ip):
 
 
 def get_robot_pose(robot_ip):
+    """Get current robot TCP pose as [x, y, z, rx, ry, rz]."""
     try:
         pose = [0.0] * 6
         DianaApi.getTcpPos(pose, ipAddress=robot_ip)
@@ -361,6 +372,26 @@ def get_robot_pose(robot_ip):
     except Exception as e:
         print(f"[ERROR] Failed to get robot pose: {e}")
         return None
+
+
+def get_robot_pose_and_matrix(robot_ip):
+    """
+    Read current robot TCP pose AND convert to 4x4 matrix atomically.
+    Returns (pose, T_base_ee) or (None, None) on failure.
+    """
+    try:
+        pose = [0.0] * 6
+        DianaApi.getTcpPos(pose, ipAddress=robot_ip)
+        
+        # Convert to homogeneous matrix using Diana's native function (flat 16-element output)
+        T_flat = [0.0] * 16
+        DianaApi.pose2Homogeneous(pose, T_flat)
+        T_base_ee = np.array(T_flat, dtype=np.float32).reshape(4, 4)
+        
+        return pose, T_base_ee
+    except Exception as e:
+        print(f"[ERROR] Failed to get robot pose: {e}")
+        return None, None
 
 
 def disconnect_robot(robot_ip):
@@ -429,20 +460,27 @@ def main():
     pose_data = []
     camera_poses_in_base = []
     pose_idx = 0
+    last_captured_pose = None  # Track last captured pose for duplicate warning
 
     while True:
         print("\n" + "=" * 50)
         print(f"POSE {pose_idx}")
         print("=" * 50)
         print("Press ENTER to capture, 'done' to finish, 'skip' to skip, or 'pose x y z rx ry rz'")
-
-        current_pose = None
+        
+        # Show current pose for user reference (but don't use this value for capture)
         if robot_connected:
-            current_pose = get_robot_pose(args.ip)
-            if current_pose is not None:
-                print(f"Current robot pose: {[round(p, 6) for p in current_pose]}")
-            else:
-                print("Robot pose unavailable. Enter pose manually.")
+            preview_pose = get_robot_pose(args.ip)
+            if preview_pose is not None:
+                print(f"Current robot pose (preview): {[round(p, 6) for p in preview_pose]}")
+                
+                # Warn if robot hasn't moved since last capture
+                if last_captured_pose is not None:
+                    trans_diff = np.linalg.norm(np.array(preview_pose[:3]) - np.array(last_captured_pose[:3]))
+                    rot_diff = np.linalg.norm(np.array(preview_pose[3:]) - np.array(last_captured_pose[3:]))
+                    if trans_diff < 0.005 and rot_diff < 0.01:
+                        print(f"[WARN] Robot has NOT moved since last capture! (diff: {trans_diff*1000:.1f}mm)")
+                        print("       Move robot to a new pose, or type 'skip' to skip.")
 
         user_input = input("> ").strip().lower()
         if user_input == "done":
@@ -450,29 +488,45 @@ def main():
         if user_input == "skip":
             continue
 
+        # Manual pose entry
+        manual_pose = None
         if user_input.startswith("pose "):
             try:
                 parts = user_input.replace("pose ", "").split()
-                current_pose = [float(p) for p in parts]
-                if len(current_pose) != 6:
+                manual_pose = [float(p) for p in parts]
+                if len(manual_pose) != 6:
                     print("[ERROR] Pose must have 6 values: x y z rx ry rz")
                     continue
             except ValueError:
                 print("[ERROR] Invalid pose format. Use: pose x y z rx ry rz")
                 continue
-        elif user_input == "":
-            if current_pose is None:
-                print("[ERROR] No pose available. Enter manually: pose x y z rx ry rz")
-                continue
-        else:
+        elif user_input != "":
             print(f"[WARN] Unknown command: {user_input}")
+            continue
+
+        # === CRITICAL: Read pose RIGHT BEFORE capture ===
+        current_pose = None
+        T_base_ee = None
+        
+        if manual_pose is not None:
+            # User provided manual pose
+            current_pose = manual_pose
+            T_base_ee = pose_to_matrix(current_pose, args.ip)
+        elif robot_connected:
+            # Read pose atomically with matrix conversion
+            current_pose, T_base_ee = get_robot_pose_and_matrix(args.ip)
+            if current_pose is None:
+                print("[ERROR] Failed to read robot pose at capture time.")
+                continue
+            print(f"Captured robot pose: {[round(p, 6) for p in current_pose]}")
+        else:
+            print("[ERROR] No pose available. Enter manually: pose x y z rx ry rz")
             continue
 
         pose_dir = output_dir / f"pose_{pose_idx:02d}"
         pose_dir.mkdir(parents=True, exist_ok=True)
 
         # Compute camera pose in base frame
-        T_base_ee = pose_to_matrix(current_pose)
         T_base_cam = compute_camera_pose_in_base(T_base_ee, EXTRINSICS_CAM_EE)
 
         timestamps = []
@@ -511,6 +565,7 @@ def main():
         }
         pose_data.append(pose_info)
         poses.append(current_pose)
+        last_captured_pose = current_pose  # Track for duplicate pose warning
         
         # Save camera pose in base frame
         camera_poses_in_base.append({
