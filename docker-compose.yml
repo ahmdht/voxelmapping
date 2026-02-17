@@ -1,5 +1,3 @@
-version: '3.8'
-
 # Diana API paths on host
 x-diana-base: &diana-base
   /home/ahmad.hoteit/.conan/data/diana-api/2.18.1/ar/stable/package/aeddd718e2f218413aa0b9078e615c0fca8986f5
@@ -27,6 +25,7 @@ services:
       - ./python:/app/python:ro
       - ./tests:/app/tests:ro
       - ./interactive_capture_mecheye.py:/app/interactive_capture_mecheye.py:ro
+      - ./visualize_voxelmap.py:/app/visualize_voxelmap.py:ro
       
       # === BUILD OUTPUT (read-write) ===
       - ./build:/app/build

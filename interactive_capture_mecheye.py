@@ -3,7 +3,6 @@
 Interactive Multi-Pose Capture (Mech-Eye Python API)
 
 At each pose, capture a 2D image, depth map, and point cloud.
-No ROS required.
 
 Usage:
     python3 interactive_capture_mecheye.py --out captures --frames-per-pose 1
@@ -38,20 +37,25 @@ from mecheye.area_scan_3d_camera import *
 from mecheye.area_scan_3d_camera_utils import confirm_capture_3d
 
 # Diana API (robot control / pose read)
-DIANA_SDK_PATH = "/home/ahmad.hoteit/DianaAPI"
-if os.path.exists(DIANA_SDK_PATH):
-    sys.path.insert(0, DIANA_SDK_PATH)
+# Docker container: /diana_api contains DianaApi.py, /diana_lib contains .so files
+# Host: Conan package path
+DIANA_DOCKER_API = "/diana_api"
+DIANA_HOST_PATH = "/home/ahmad.hoteit/.conan/data/diana-api/2.18.1/ar/stable/package/aeddd718e2f218413aa0b9078e615c0fca8986f5/lib/python3/site-packages/diana_api"
+
+if os.path.exists(DIANA_DOCKER_API):
+    sys.path.insert(0, DIANA_DOCKER_API)
+elif os.path.exists(DIANA_HOST_PATH):
+    sys.path.insert(0, DIANA_HOST_PATH)
 
 try:
     import DianaApi
     DIANA_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    print(f"[WARN] DianaApi import failed: {e}")
     DIANA_AVAILABLE = False
 
 
-# ============================================================================
-# HAND-EYE CALIBRATION EXTRINSICS (T_cam_ee: camera frame → end-effector frame)
-# ============================================================================
+# HAND EYE CALIBRATION EXTRINSICS
 EXTRINSICS_CAM_EE = np.array([
     [-0.71365504342923614, -0.70020575462676071, -0.020208418433506396, 0.07363354839981448],
     [ 0.70042557727115762, -0.71369780379112213, -0.0062813667377777374, 0.13484894916013071],
@@ -93,144 +97,6 @@ def compute_camera_pose_in_base(T_base_ee, T_cam_ee):
     """
     # Eye-in-hand configuration
     T_ee_cam = np.linalg.inv(T_cam_ee)
-    T_base_cam = T_base_ee @ T_ee_cam
-    return T_base_cam.astype(np.float32)
-
-
-def run_calibration_verification(camera, robot_ip, n_frames=5):
-    """
-    Capture multiple frames at the same robot pose to verify calibration.
-    
-    If the robot is stationary and scene is static, all point clouds should
-    align perfectly in camera frame. Large deviations indicate:
-    - Camera noise/instability
-    - Scene movement
-    - Calibration issues
-    
-    Returns True if calibration appears valid, False otherwise.
-    """
-    print("\n" + "=" * 60)
-    print("CALIBRATION VERIFICATION MODE")
-    print("=" * 60)
-    print(f"\nThis will capture {n_frames} frames at the SAME robot pose.")
-    print("Keep the robot and scene completely STATIC during capture.")
-    print("\nPress ENTER when ready...")
-    input()
-    
-    # Get current robot pose
-    robot_pose = None
-    if DIANA_AVAILABLE:
-        try:
-            pose = [0.0] * 6
-            DianaApi.getTcpPos(pose, ipAddress=robot_ip)
-            robot_pose = pose
-            print(f"Robot pose: {[round(p, 4) for p in pose]}")
-        except Exception as e:
-            print(f"[WARN] Could not get robot pose: {e}")
-    
-    clouds = []
-    centroids = []
-    
-    print(f"\nCapturing {n_frames} frames...")
-    for i in range(n_frames):
-        frame_3d = Frame3D()
-        status = camera.capture_3d(frame_3d)
-        if not status.is_ok():
-            print(f"  Frame {i+1}: FAILED")
-            continue
-        
-        point_cloud = frame_3d.get_untextured_point_cloud()
-        points = np.array(point_cloud.data(), dtype=np.float32).reshape(-1, 3)
-        points = points / 1000.0  # mm to meters
-        
-        # Filter valid points
-        valid = (np.abs(points).sum(axis=1) > 0) & (np.abs(points).sum(axis=1) < 10)
-        valid_points = points[valid]
-        
-        centroid = valid_points.mean(axis=0)
-        clouds.append(valid_points)
-        centroids.append(centroid)
-        
-        print(f"  Frame {i+1}: {valid_points.shape[0]} valid pts, centroid={centroid.round(4)}")
-        time.sleep(0.5)  # Small delay between captures
-    
-    if len(centroids) < 2:
-        print("\n[ERROR] Not enough valid frames captured.")
-        return False
-    
-    centroids = np.array(centroids)
-    
-    # Compute statistics
-    print("\n" + "-" * 60)
-    print("VERIFICATION RESULTS")
-    print("-" * 60)
-    
-    mean_centroid = centroids.mean(axis=0)
-    std_centroid = centroids.std(axis=0)
-    max_deviation = np.abs(centroids - mean_centroid).max(axis=0)
-    
-    print(f"\nMean centroid:    [{mean_centroid[0]:.4f}, {mean_centroid[1]:.4f}, {mean_centroid[2]:.4f}]")
-    print(f"Std deviation:    [{std_centroid[0]:.4f}, {std_centroid[1]:.4f}, {std_centroid[2]:.4f}]")
-    print(f"Max deviation:    [{max_deviation[0]:.4f}, {max_deviation[1]:.4f}, {max_deviation[2]:.4f}]")
-    
-    # Compute pairwise distances
-    pairwise_dists = []
-    for i in range(len(centroids)):
-        for j in range(i+1, len(centroids)):
-            d = np.linalg.norm(centroids[i] - centroids[j])
-            pairwise_dists.append(d)
-    
-    max_pair_dist = max(pairwise_dists)
-    mean_pair_dist = np.mean(pairwise_dists)
-    
-    print(f"\nPairwise centroid distances:")
-    print(f"  Mean: {mean_pair_dist*1000:.2f} mm")
-    print(f"  Max:  {max_pair_dist*1000:.2f} mm")
-    
-    # Verdict
-    print("\n" + "-" * 60)
-    if max_pair_dist < 0.005:  # < 5mm
-        print("✅ EXCELLENT: Camera captures are highly consistent (<5mm)")
-        print("   Hand-eye calibration can proceed with confidence.")
-        is_valid = True
-    elif max_pair_dist < 0.015:  # < 15mm
-        print("⚠️  ACCEPTABLE: Camera captures have minor variation (5-15mm)")
-        print("   Results may have some noise but should be usable.")
-        is_valid = True
-    elif max_pair_dist < 0.030:  # < 30mm
-        print("⚠️  MARGINAL: Camera captures vary significantly (15-30mm)")
-        print("   Consider: camera warm-up, scene stability, lighting.")
-        is_valid = True
-    else:
-        print("❌ POOR: Camera captures are inconsistent (>30mm)")
-        print("   Possible issues:")
-        print("   - Camera not warmed up (run for 10-15 min)")
-        print("   - Scene is moving")
-        print("   - Depth settings too aggressive")
-        print("   - Camera hardware issue")
-        is_valid = False
-    print("-" * 60)
-    
-    # Test transform consistency if robot pose available
-    if robot_pose is not None and len(clouds) >= 2:
-        print("\nTesting TRANSFORMED cloud consistency...")
-        T_base_ee = pose_to_matrix(robot_pose, robot_ip)
-        T_base_cam = compute_camera_pose_in_base(T_base_ee, EXTRINSICS_CAM_EE)
-        
-        transformed_centroids = []
-        for pts in clouds:
-            pts_homo = np.hstack([pts, np.ones((pts.shape[0], 1))])
-            pts_base = (T_base_cam @ pts_homo.T).T[:, :3]
-            transformed_centroids.append(pts_base.mean(axis=0))
-        
-        transformed_centroids = np.array(transformed_centroids)
-        trans_std = transformed_centroids.std(axis=0)
-        trans_max_dev = np.abs(transformed_centroids - transformed_centroids.mean(axis=0)).max(axis=0)
-        
-        print(f"Transformed std:     [{trans_std[0]:.4f}, {trans_std[1]:.4f}, {trans_std[2]:.4f}]")
-        print(f"Transformed max dev: [{trans_max_dev[0]:.4f}, {trans_max_dev[1]:.4f}, {trans_max_dev[2]:.4f}]")
-    
-    return is_valid
     T_base_cam = T_base_ee @ T_ee_cam
     return T_base_cam.astype(np.float32)
 
@@ -347,19 +213,53 @@ def _capture_single_frame(camera, pose_dir, save_textured):
 
     return ts_str, points_data
 
+_robot_actually_connected = False
 
 def connect_robot(robot_ip):
+    """Connect to Diana robot."""
+    global _robot_actually_connected
+    _robot_actually_connected = False
+    
     if not DIANA_AVAILABLE:
         print("[WARN] DianaApi not available. Robot pose will be manual input.")
         return False
+
     try:
-        print(f"[INFO] Connecting to robot at {robot_ip}...")
-        DianaApi.initSrv((robot_ip, 0, 0, 0, 0, 0))
-        time.sleep(1)
-        print("[INFO] ✅ Robot connected!")
+        # Clear any stale connection first
+        try:
+            DianaApi.destroySrv(robot_ip)
+            time.sleep(0.5)
+        except Exception:
+            pass
+        
+        # Clear error state before connecting
+        try:
+            DianaApi.setLastError(0, robot_ip)
+        except Exception:
+            pass
+        
+        # Initialize connection
+        # srv_net_st = (ip_address, heartbeat_port, robot_state_port, srv_port, realtime_port, passthrough_port)
+        init_ret = DianaApi.initSrv((robot_ip, 0, 0, 0, 0, 0))
+        if not init_ret:
+            print(f"[ERROR] Robot connection failed at {robot_ip}")
+            return False
+
+        # Read TCP pose to verify connection
+        test_pose = [0.0] * 6
+        ret = DianaApi.getTcpPos(test_pose, ipAddress=robot_ip)
+        
+        if not ret or sum(abs(p) for p in test_pose) < 1e-9:
+            print(f"[WARN] Connected but received zero pose - robot may need power cycle")
+            return False
+        
+        _robot_actually_connected = True
+        print(f"[INFO] Robot connected: {robot_ip}")
+        print(f"[INFO] Current TCP: {[round(p, 4) for p in test_pose]}")
         return True
+
     except Exception as e:
-        print(f"[ERROR] Failed to connect to robot: {e}")
+        print(f"[ERROR] Robot connection failed: {e}")
         return False
 
 
@@ -395,12 +295,14 @@ def get_robot_pose_and_matrix(robot_ip):
 
 
 def disconnect_robot(robot_ip):
-    if DIANA_AVAILABLE:
+    global _robot_actually_connected
+    if DIANA_AVAILABLE and _robot_actually_connected:
         try:
             DianaApi.destroySrv(robot_ip)
             print("[INFO] Robot disconnected")
-        except Exception:
-            pass
+            _robot_actually_connected = False
+        except Exception as e:
+            print(f"[WARN] Error during robot disconnect: {e}")
 
 
 def main():
@@ -415,8 +317,6 @@ def main():
     parser.add_argument("--ip", type=str, default="192.168.10.75", help="Diana robot IP address")
     parser.add_argument("--voxel-size", type=float, default=0.005, help="Voxel size in meters (default: 5mm)")
     parser.add_argument("--no-voxel", action="store_true", help="Disable real-time voxel mapping")
-    parser.add_argument("--verify-calibration", action="store_true", 
-                        help="Run calibration verification mode (captures N frames at same pose)")
     parser.add_argument("--verify-frames", type=int, default=5, 
                         help="Number of frames for calibration verification (default: 5)")
     args = parser.parse_args()
@@ -438,15 +338,6 @@ def main():
         return
 
     robot_connected = connect_robot(args.ip)
-
-    # Calibration verification mode
-    if args.verify_calibration:
-        is_valid = run_calibration_verification(camera, args.ip, args.verify_frames)
-        if robot_connected:
-            disconnect_robot(args.ip)
-        camera.disconnect()
-        print("\nDisconnected from the camera successfully.")
-        return
 
     # Initialize voxel mapping
     voxel_map = None
@@ -509,7 +400,7 @@ def main():
         T_base_ee = None
         
         if manual_pose is not None:
-            # User provided manual pose
+            # provide manual pose
             current_pose = manual_pose
             T_base_ee = pose_to_matrix(current_pose, args.ip)
         elif robot_connected:
@@ -576,7 +467,7 @@ def main():
         
         pose_idx += 1
 
-        print(f"[SAVE] ✅ Pose {pose_idx - 1} saved to {pose_dir}")
+        print(f"[SAVE] Pose {pose_idx - 1} saved to {pose_dir}")
 
     index_path = output_dir / "capture_index.json"
     with open(index_path, "w") as f:
