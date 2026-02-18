@@ -64,7 +64,37 @@ EXTRINSICS_CAM_EE = np.array([
 ], dtype=np.float32)
 
 
-def pose_to_matrix(pose, robot_ip=None):
+def _select_pose_matrix_from_flat(T_flat, mode="auto"):
+    """Interpret Diana's flat 4x4 matrix according to the selected layout mode."""
+    raw = np.array(T_flat, dtype=np.float32).reshape(4, 4)
+    transposed = raw.T
+
+    def is_se3(T):
+        return np.allclose(T[3, :], [0, 0, 0, 1], atol=1e-3) and np.isfinite(T).all()
+
+    if mode == "raw":
+        return raw
+    if mode == "transpose":
+        return transposed
+    if mode != "auto":
+        raise ValueError(f"Unknown pose matrix mode: {mode}")
+
+    raw_ok = is_se3(raw)
+    transposed_ok = is_se3(transposed)
+
+    if raw_ok and not transposed_ok:
+        return raw
+    if transposed_ok and not raw_ok:
+        return transposed
+    if raw_ok and transposed_ok:
+        print("[WARN] Both raw and transposed pose matrices look valid; defaulting to raw.")
+        return raw
+
+    print("[WARN] Neither raw nor transposed pose matrix passed SE(3) check; defaulting to raw.")
+    return raw
+
+
+def pose_to_matrix(pose, robot_ip=None, pose_matrix_mode="auto"):
     """
     Convert robot pose [x, y, z, rx, ry, rz] (meters, radians) to 4x4 transform.
     Uses DianaApi.pose2Homogeneous for correct conversion.
@@ -75,10 +105,7 @@ def pose_to_matrix(pose, robot_ip=None):
             # Use Diana's native conversion (flat 16-element output)
             T_flat = [0.0] * 16
             DianaApi.pose2Homogeneous(pose, T_flat)
-            # Diana API returns row-major flat array where the caller
-            # expects column-major SE(3). Transpose to put translation
-            # into the last column and bottom row to [0,0,0,1].
-            return np.array(T_flat, dtype=np.float32).reshape(4, 4).T
+            return _select_pose_matrix_from_flat(T_flat, mode=pose_matrix_mode)
         except Exception as e:
             print(f"[WARN] DianaApi.pose2Homogeneous failed: {e}, using fallback")
     
@@ -104,20 +131,23 @@ def assert_se3(T, name):
         raise ValueError(f"{name} has NaN/Inf")
 
 
-def compute_camera_pose_in_base(T_base_ee, T_cam_ee):
+def compute_camera_pose_in_base(T_base_ee, T_cam_ee, extrinsics_mode="cam_to_ee"):
     """
     Compute T_base_cam from robot end-effector pose and hand-eye extrinsics.
     
-    For eye-in-hand: T_base_cam = T_base_ee @ inv(T_cam_ee)
-    For eye-to-hand: T_base_cam = T_cam_ee (fixed)
+    If extrinsics_mode="cam_to_ee": T_base_cam = T_base_ee @ inv(T_cam_ee)
+    If extrinsics_mode="ee_to_cam": T_base_cam = T_base_ee @ T_ee_cam
     """
     # Validate inputs
     assert_se3(T_base_ee, "T_base_ee")
     assert_se3(T_cam_ee, "T_cam_ee (extrinsics)")
     
-    # Eye-in-hand configuration
-    T_ee_cam = np.linalg.inv(T_cam_ee)
-    T_base_cam = T_base_ee @ T_ee_cam
+    if extrinsics_mode == "cam_to_ee":
+        T_base_cam = T_base_ee @ np.linalg.inv(T_cam_ee)
+    elif extrinsics_mode == "ee_to_cam":
+        T_base_cam = T_base_ee @ T_cam_ee
+    else:
+        raise ValueError(f"Unknown extrinsics_mode: {extrinsics_mode}")
     
     # Validate output
     assert_se3(T_base_cam, "T_base_cam")
@@ -297,7 +327,7 @@ def get_robot_pose(robot_ip):
         return None
 
 
-def get_robot_pose_and_matrix(robot_ip):
+def get_robot_pose_and_matrix(robot_ip, pose_matrix_mode="auto"):
     """
     Read current robot TCP pose AND convert to 4x4 matrix atomically.
     Returns (pose, T_base_ee) or (None, None) on failure.
@@ -309,9 +339,8 @@ def get_robot_pose_and_matrix(robot_ip):
         # Convert to homogeneous matrix using Diana's native function (flat 16-element output)
         T_flat = [0.0] * 16
         DianaApi.pose2Homogeneous(pose, T_flat)
-        # Diana API returns a row-major flat matrix; transpose to standard SE(3)
-        T_base_ee = np.array(T_flat, dtype=np.float32).reshape(4, 4).T
-        
+        T_base_ee = _select_pose_matrix_from_flat(T_flat, mode=pose_matrix_mode)
+
         return pose, T_base_ee
     except Exception as e:
         print(f"[ERROR] Failed to get robot pose: {e}")
@@ -343,6 +372,23 @@ def main():
     parser.add_argument("--no-voxel", action="store_true", help="Disable real-time voxel mapping")
     parser.add_argument("--verify-frames", type=int, default=5, 
                         help="Number of frames for calibration verification (default: 5)")
+    parser.add_argument(
+        "--pose-matrix-mode",
+        choices=["auto", "raw", "transpose"],
+        default="auto",
+        help="How to interpret Diana pose2Homogeneous 4x4 layout",
+    )
+    parser.add_argument(
+        "--extrinsics-mode",
+        choices=["cam_to_ee", "ee_to_cam"],
+        default="cam_to_ee",
+        help="Meaning of EXTRINSICS_CAM_EE in T_base_cam composition",
+    )
+    parser.add_argument(
+        "--debug-transforms",
+        action="store_true",
+        help="Print raw/transposed matrices and chosen transform chain per capture",
+    )
     args = parser.parse_args()
 
     print("\n=== SAFETY NOTICE ===")
@@ -426,10 +472,17 @@ def main():
         if manual_pose is not None:
             # provide manual pose
             current_pose = manual_pose
-            T_base_ee = pose_to_matrix(current_pose, args.ip)
+            T_base_ee = pose_to_matrix(
+                current_pose,
+                args.ip,
+                pose_matrix_mode=args.pose_matrix_mode,
+            )
         elif robot_connected:
             # Read pose atomically with matrix conversion
-            current_pose, T_base_ee = get_robot_pose_and_matrix(args.ip)
+            current_pose, T_base_ee = get_robot_pose_and_matrix(
+                args.ip,
+                pose_matrix_mode=args.pose_matrix_mode,
+            )
             if current_pose is None:
                 print("[ERROR] Failed to read robot pose at capture time.")
                 continue
@@ -442,7 +495,27 @@ def main():
         pose_dir.mkdir(parents=True, exist_ok=True)
 
         # Compute camera pose in base frame
-        T_base_cam = compute_camera_pose_in_base(T_base_ee, EXTRINSICS_CAM_EE)
+        T_base_cam = compute_camera_pose_in_base(
+            T_base_ee,
+            EXTRINSICS_CAM_EE,
+            extrinsics_mode=args.extrinsics_mode,
+        )
+
+        if args.debug_transforms and DIANA_AVAILABLE:
+            T_flat_dbg = [0.0] * 16
+            DianaApi.pose2Homogeneous(current_pose, T_flat_dbg)
+            T_raw_dbg = np.array(T_flat_dbg, dtype=np.float32).reshape(4, 4)
+            T_t_dbg = T_raw_dbg.T
+            print("\n[DEBUG] pose2Homogeneous raw:")
+            print(T_raw_dbg)
+            print("[DEBUG] pose2Homogeneous transposed:")
+            print(T_t_dbg)
+            print(f"[DEBUG] Selected pose mode: {args.pose_matrix_mode}")
+            print(f"[DEBUG] Using extrinsics_mode: {args.extrinsics_mode}")
+            print(f"[DEBUG] T_base_ee translation: {T_base_ee[:3, 3]}")
+            print(f"[DEBUG] T_base_cam translation: {T_base_cam[:3, 3]}")
+        elif args.debug_transforms:
+            print("[DEBUG] DianaApi not available; skipping pose2Homogeneous raw/transposed print.")
 
         timestamps = []
         all_points = []
@@ -462,8 +535,9 @@ def main():
         # Register to voxel map
         if voxel_map is not None and len(all_points) > 0:
             for points in all_points:
-                # Filter invalid points (zeros, NaN, too far)
-                valid = (np.abs(points).sum(axis=1) > 0) & (np.abs(points).sum(axis=1) < 10)
+                # Filter invalid points by Euclidean range in camera coordinates.
+                r = np.linalg.norm(points, axis=1)
+                valid = np.isfinite(r) & (r > 0.05) & (r < 2.0)
                 valid_points = points[valid]
                 if valid_points.shape[0] > 0:
                     voxel_map.register_cloud(valid_points, T_base_cam)
@@ -507,7 +581,15 @@ def main():
     # Save extrinsics used
     extrinsics_path = output_dir / "extrinsics_used.json"
     with open(extrinsics_path, "w") as f:
-        json.dump({"T_cam_ee": EXTRINSICS_CAM_EE.tolist()}, f, indent=2)
+        json.dump(
+            {
+                "T_cam_ee": EXTRINSICS_CAM_EE.tolist(),
+                "extrinsics_mode": args.extrinsics_mode,
+                "pose_matrix_mode": args.pose_matrix_mode,
+            },
+            f,
+            indent=2,
+        )
     print(f"[SAVE] Extrinsics saved to {extrinsics_path}")
 
     # Save final voxel map
