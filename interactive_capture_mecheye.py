@@ -72,10 +72,11 @@ def pose_to_matrix(pose, robot_ip=None):
     """
     if DIANA_AVAILABLE:
         try:
-            # Use Diana's native conversion (flat 16-element output)
+            # Use Diana's native conversion (flat 16-element output, row-major)
             T_flat = [0.0] * 16
             DianaApi.pose2Homogeneous(pose, T_flat)
-            return np.array(T_flat, dtype=np.float32).reshape(4, 4)
+            # Diana API returns row-major format, transpose to standard column-major SE(3)
+            return np.array(T_flat, dtype=np.float32).reshape(4, 4).T
         except Exception as e:
             print(f"[WARN] DianaApi.pose2Homogeneous failed: {e}, using fallback")
     
@@ -283,10 +284,11 @@ def get_robot_pose_and_matrix(robot_ip):
         pose = [0.0] * 6
         DianaApi.getTcpPos(pose, ipAddress=robot_ip)
         
-        # Convert to homogeneous matrix using Diana's native function (flat 16-element output)
+        # Convert to homogeneous matrix using Diana's native function (flat 16-element output, row-major)
         T_flat = [0.0] * 16
         DianaApi.pose2Homogeneous(pose, T_flat)
-        T_base_ee = np.array(T_flat, dtype=np.float32).reshape(4, 4)
+        # Diana API returns row-major format, transpose to standard column-major SE(3)
+        T_base_ee = np.array(T_flat, dtype=np.float32).reshape(4, 4).T
         
         return pose, T_base_ee
     except Exception as e:
