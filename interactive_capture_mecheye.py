@@ -72,10 +72,12 @@ def pose_to_matrix(pose, robot_ip=None):
     """
     if DIANA_AVAILABLE:
         try:
-            # Use Diana's native conversion (flat 16-element output, row-major)
+            # Use Diana's native conversion (flat 16-element output)
             T_flat = [0.0] * 16
             DianaApi.pose2Homogeneous(pose, T_flat)
-            # Diana API returns row-major format, transpose to standard column-major SE(3)
+            # Diana API returns row-major flat array where the caller
+            # expects column-major SE(3). Transpose to put translation
+            # into the last column and bottom row to [0,0,0,1].
             return np.array(T_flat, dtype=np.float32).reshape(4, 4).T
         except Exception as e:
             print(f"[WARN] DianaApi.pose2Homogeneous failed: {e}, using fallback")
@@ -89,6 +91,19 @@ def pose_to_matrix(pose, robot_ip=None):
     return T
 
 
+def assert_se3(T, name):
+    """
+    Validate that T is a proper SE(3) homogeneous transformation matrix.
+    Bottom row must be [0, 0, 0, 1], and values must be finite.
+    """
+    T = np.asarray(T)
+    if not np.allclose(T[3, :], [0, 0, 0, 1], atol=1e-3):
+        print(f"[FATAL] {name} bottom row wrong: {T[3, :]}")
+        raise ValueError(f"{name} is not a valid SE(3) matrix")
+    if not np.isfinite(T).all():
+        raise ValueError(f"{name} has NaN/Inf")
+
+
 def compute_camera_pose_in_base(T_base_ee, T_cam_ee):
     """
     Compute T_base_cam from robot end-effector pose and hand-eye extrinsics.
@@ -96,9 +111,16 @@ def compute_camera_pose_in_base(T_base_ee, T_cam_ee):
     For eye-in-hand: T_base_cam = T_base_ee @ inv(T_cam_ee)
     For eye-to-hand: T_base_cam = T_cam_ee (fixed)
     """
+    # Validate inputs
+    assert_se3(T_base_ee, "T_base_ee")
+    assert_se3(T_cam_ee, "T_cam_ee (extrinsics)")
+    
     # Eye-in-hand configuration
     T_ee_cam = np.linalg.inv(T_cam_ee)
     T_base_cam = T_base_ee @ T_ee_cam
+    
+    # Validate output
+    assert_se3(T_base_cam, "T_base_cam")
     return T_base_cam.astype(np.float32)
 
 
@@ -284,10 +306,10 @@ def get_robot_pose_and_matrix(robot_ip):
         pose = [0.0] * 6
         DianaApi.getTcpPos(pose, ipAddress=robot_ip)
         
-        # Convert to homogeneous matrix using Diana's native function (flat 16-element output, row-major)
+        # Convert to homogeneous matrix using Diana's native function (flat 16-element output)
         T_flat = [0.0] * 16
         DianaApi.pose2Homogeneous(pose, T_flat)
-        # Diana API returns row-major format, transpose to standard column-major SE(3)
+        # Diana API returns a row-major flat matrix; transpose to standard SE(3)
         T_base_ee = np.array(T_flat, dtype=np.float32).reshape(4, 4).T
         
         return pose, T_base_ee
