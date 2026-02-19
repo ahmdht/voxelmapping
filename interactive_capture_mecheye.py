@@ -56,6 +56,8 @@ except ImportError as e:
 
 
 # HAND EYE CALIBRATION EXTRINSICS
+# NOTE: interpretation chosen: this matrix is stored and applied as T_ee_cam
+# (end-effector FROM camera). Use direct composition: T_base_cam = T_base_ee @ T_ee_cam
 EXTRINSICS_CAM_EE = np.array([
     [-0.71365504342923614, -0.70020575462676071, -0.020208418433506396, 0.07363354839981448],
     [ 0.70042557727115762, -0.71369780379112213, -0.0062813667377777374, 0.13484894916013071],
@@ -108,16 +110,15 @@ def compute_camera_pose_in_base(T_base_ee, T_cam_ee):
     """
     Compute T_base_cam from robot end-effector pose and hand-eye extrinsics.
     
-    For eye-in-hand: T_base_cam = T_base_ee @ inv(T_cam_ee)
-    For eye-to-hand: T_base_cam = T_cam_ee (fixed)
+        We interpret the stored extrinsics as T_ee_cam (end-effector FROM camera).
+        Therefore use direct composition:
+            T_base_cam = T_base_ee @ T_ee_cam
     """
     # Validate inputs
     assert_se3(T_base_ee, "T_base_ee")
     assert_se3(T_cam_ee, "T_cam_ee (extrinsics)")
-    
-    # Eye-in-hand configuration
-    T_ee_cam = np.linalg.inv(T_cam_ee)
-    T_base_cam = T_base_ee @ T_ee_cam
+    # Direct composition (T_cam_ee is treated as T_ee_cam)
+    T_base_cam = T_base_ee @ T_cam_ee
     
     # Validate output
     assert_se3(T_base_cam, "T_base_cam")
@@ -333,7 +334,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Interactive multi-pose capture with Mech-Eye (Python SDK)"
     )
-    parser.add_argument("--out", type=str, default="interactive_captures", help="Output directory")
+    parser.add_argument("--out", type=str, default="captures", help="Output directory")
     parser.add_argument("--camera-index", type=int, default=None, help="Camera index from discovery")
     parser.add_argument("--frames-per-pose", type=int, default=1, help="Frames to capture per pose")
     parser.add_argument("--interval", type=float, default=0.2, help="Seconds between frames at a pose")
@@ -351,7 +352,25 @@ def main():
     input()
 
     output_dir = Path(args.out)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # Make writable so container/host user differences don't block later writes
+            os.chmod(str(output_dir), 0o777)
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[WARN] Could not create output directory '{output_dir}': {e}")
+        # Fallback to a local temp directory
+        fallback = Path("/tmp") / f"voxelmapping_captures_{int(time.time())}"
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+            os.chmod(str(fallback), 0o777)
+            print(f"[INFO] Falling back to: {fallback}")
+            output_dir = fallback
+        except Exception as e2:
+            print(f"[ERROR] Failed to create fallback output directory: {e2}")
+            return
 
     camera = Camera()
     if not discover_and_connect(camera, args.camera_index):
@@ -439,7 +458,23 @@ def main():
             continue
 
         pose_dir = output_dir / f"pose_{pose_idx:02d}"
-        pose_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            pose_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(str(pose_dir), 0o777)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[WARN] Could not create pose dir '{pose_dir}': {e}")
+            # try fallback inside output_dir
+            try:
+                pose_dir = output_dir / "pose_fallback"
+                pose_dir.mkdir(parents=True, exist_ok=True)
+                os.chmod(str(pose_dir), 0o777)
+                print(f"[INFO] Using fallback pose dir: {pose_dir}")
+            except Exception as e2:
+                print(f"[ERROR] Failed to create any pose directory: {e2}")
+                continue
 
         # Compute camera pose in base frame
         T_base_cam = compute_camera_pose_in_base(T_base_ee, EXTRINSICS_CAM_EE)
@@ -506,16 +541,28 @@ def main():
 
     # Save extrinsics used
     extrinsics_path = output_dir / "extrinsics_used.json"
+    # Save using the explicit key `T_ee_cam` to indicate the stored matrix
+    # is T_ee_cam (end-effector FROM camera) and should be used directly.
     with open(extrinsics_path, "w") as f:
-        json.dump({"T_cam_ee": EXTRINSICS_CAM_EE.tolist()}, f, indent=2)
-    print(f"[SAVE] Extrinsics saved to {extrinsics_path}")
+        json.dump({"T_ee_cam": EXTRINSICS_CAM_EE.tolist()}, f, indent=2)
+    print(f"[SAVE] Extrinsics saved to {extrinsics_path} (key: T_ee_cam)")
 
     # Save final voxel map
     if voxel_map is not None:
         map_points = voxel_map.retrieve_map()
         voxel_map_path = output_dir / "voxel_map_merged.npy"
-        np.save(str(voxel_map_path), map_points)
-        print(f"[SAVE] Final voxel map saved to {voxel_map_path} ({map_points.shape[0]} points)")
+        try:
+            np.save(str(voxel_map_path), map_points)
+            print(f"[SAVE] Final voxel map saved to {voxel_map_path} ({map_points.shape[0]} points)")
+        except Exception as e:
+            print(f"[WARN] Failed to save voxel map to {voxel_map_path}: {e}")
+            # Try saving to /tmp
+            fallback_map = Path("/tmp") / f"voxel_map_merged_{int(time.time())}.npy"
+            try:
+                np.save(str(fallback_map), map_points)
+                print(f"[SAVE] Final voxel map saved to fallback {fallback_map} ({map_points.shape[0]} points)")
+            except Exception as e2:
+                print(f"[ERROR] Failed to save fallback voxel map: {e2}")
 
     camera.disconnect()
     if robot_connected:

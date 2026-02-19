@@ -49,3 +49,9 @@ cmake_install.cmake
 Makefile
 CTestTestfile.cmake
 Testing/
+
+# Archives / packages (ignore local downloads and capture archives)
+*.zip
+*.tar.gz
+*.tgz
+*.deb

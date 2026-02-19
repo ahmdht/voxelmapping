@@ -1,5 +1,78 @@
 #!/usr/bin/env python3
 """
+Wrapper to run the mounted `interactive_capture_mecheye.py` with a stable set of flags.
+
+Why: the container mounts only `interactive_capture_mecheye.py`, not a *_test.py file,
+so this wrapper makes it convenient to launch a reproducible test from inside the container.
+
+Usage:
+  python3 interactive_capture_mecheye_test.py
+"""
+import subprocess
+import sys
+
+SCRIPT = "interactive_capture_mecheye.py"
+
+# Forward any CLI args provided to this wrapper to the real script.
+# If none provided, fall back to a reasonable default set.
+raw_args = sys.argv[1:]
+if len(raw_args) == 0:
+    raw_args = ["--out", "debug_a", "--voxel-size", "0.005"]
+
+# Known flags accepted by interactive_capture_mecheye.py
+known_flags = {
+    '--out': 1,
+    '--camera-index': 1,
+    '--frames-per-pose': 1,
+    '--interval': 1,
+    '--textured': 0,
+    '--ip': 1,
+    '--voxel-size': 1,
+    '--no-voxel': 0,
+    '--verify-frames': 1,
+    '-h': 0,
+    '--help': 0,
+}
+
+forwarded = []
+skipped = []
+i = 0
+while i < len(raw_args):
+    a = raw_args[i]
+    if a in known_flags:
+        n = known_flags[a]
+        forwarded.append(a)
+        if n == 1:
+            if i + 1 < len(raw_args):
+                forwarded.append(raw_args[i + 1])
+                i += 2
+                continue
+            else:
+                print(f"[WARN] Missing value for {a}; skipping")
+                i += 1
+                continue
+        else:
+            i += 1
+            continue
+    else:
+        # unknown/test-only flag -> skip but remember
+        skipped.append(a)
+        # if next arg looks like a value (not starting with -), skip it too
+        if i + 1 < len(raw_args) and not raw_args[i + 1].startswith('-'):
+            skipped.append(raw_args[i + 1])
+            i += 2
+        else:
+            i += 1
+
+if skipped:
+    print(f"[INFO] The wrapper removed unsupported args: {skipped}")
+
+args = [sys.executable, SCRIPT] + forwarded
+print("Running:", " ".join(args))
+ret = subprocess.call(args)
+sys.exit(ret)
+#!/usr/bin/env python3
+"""
 Interactive Multi-Pose Capture (Mech-Eye Python API)
 
 At each pose, capture a 2D image, depth map, and point cloud.
@@ -362,7 +435,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Interactive multi-pose capture with Mech-Eye (Python SDK)"
     )
-    parser.add_argument("--out", type=str, default="interactive_captures", help="Output directory")
+    parser.add_argument("--out", type=str, default="captures", help="Output directory")
     parser.add_argument("--camera-index", type=int, default=None, help="Camera index from discovery")
     parser.add_argument("--frames-per-pose", type=int, default=1, help="Frames to capture per pose")
     parser.add_argument("--interval", type=float, default=0.2, help="Seconds between frames at a pose")

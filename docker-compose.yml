@@ -25,7 +25,10 @@ services:
       - ./python:/app/python:ro
       - ./tests:/app/tests:ro
       - ./interactive_capture_mecheye.py:/app/interactive_capture_mecheye.py:ro
+      - ./interactive_capture_mecheye_test.py:/app/interactive_capture_mecheye_test.py:ro
       - ./visualize_voxelmap.py:/app/visualize_voxelmap.py:ro
+      - ./debug_handeye_chain.py:/app/debug_handeye_chain.py:ro
+      - ./debug_capture_suite.py:/app/debug_capture_suite.py:ro
       
       # === BUILD OUTPUT (read-write) ===
       - ./build:/app/build
@@ -61,4 +64,5 @@ services:
     # Working directory
     working_dir: /app
     
+    # Run a shell as the configured user (default: host UID/GID)
     command: bash

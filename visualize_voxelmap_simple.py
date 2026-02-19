@@ -132,7 +132,7 @@ def open_meshlab(ply_path: Path):
     """Open in MeshLab."""
     cmd = find_viewer("meshlab")
     if not cmd:
-        print("MeshLab not found. Install with: sudo apt install meshlab")
+        print("MeshLab not found. If you're using a conda env with pymechlab, activate it; otherwise install system MeshLab with: sudo apt install meshlab")
         return False
     
     print(f"Opening in MeshLab: {ply_path}")
@@ -212,7 +212,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Viewers:
-  meshlab      - MeshLab (install: sudo apt install meshlab)
+  meshlab      - MeshLab (system: sudo apt install meshlab; conda: conda install -c conda-forge pymechlab)
   cloudcompare - CloudCompare (install: sudo snap install cloudcompare)
   pcl          - PCL Viewer (install: sudo apt install pcl-tools)
   open3d       - Open3D Python viewer (pip install open3d)
@@ -224,6 +224,7 @@ Examples:
   python3 visualize_voxelmap_simple.py --stats-only captures/
 """
     )
+
     parser.add_argument("path", type=Path, help="Path to .npy, .ply file or captures directory")
     parser.add_argument("--viewer", "-v", type=str, default="auto",
                         choices=["meshlab", "cloudcompare", "pcl", "open3d", "auto"],
@@ -232,7 +233,7 @@ Examples:
                         help="Print statistics only, don't open viewer")
     parser.add_argument("--no-stats", action="store_true",
                         help="Skip statistics printout")
-    
+
     args = parser.parse_args()
     
     # Find voxel map file
@@ -277,7 +278,7 @@ Examples:
         
         if not success:
             print("\nNo viewer found! Install one of:")
-            print("  sudo apt install meshlab")
+            print("  sudo apt install meshlab        (or: conda install -c conda-forge pymechlab in an activated env)")
             print("  sudo snap install cloudcompare")
             print("  sudo apt install pcl-tools")
             print("  pip install open3d")

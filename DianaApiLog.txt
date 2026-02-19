@@ -1,0 +1,9 @@
+ [Info] [CRobotApiSystem::createRobotApi]create ok:192.168.10.75,initRef:1
+ [Info] [CSessionUDP::initSession] ret： 1 session type: 0 local ip-port: 0.0.0.0-34145,remoteipPort:-0
+ [Info] [CSessionUDP::initSession] ret： 1 session type: 1 local ip-port: 0.0.0.0-39034,remoteipPort:-0
+ [Info] [CSessionUDP::initSession] ret： 1 session type: 2 local ip-port: 0.0.0.0-39255,remoteipPort:-0
+ [Info] [CSessionUDP::initSession] ret： 1 session type: 3 local ip-port: 0.0.0.0-57822,remoteipPort:-0
+ [Info] [CSessionUDP::initSession] ret： 1 session type: 4 local ip-port: 0.0.0.0-38282,remoteipPort:-0
+ [Error] [CRobotApiImp::requestConnect] uuid inequality ,uuid: 
+ [Error] [CRobotApiSystem::createRobotApi]ip:192.168.10.75 Init Error Ret:6
+ [Info] [CRobotApiSystem::destroyRobotApi]192.168.10.75, refCount:1, InitRef:0
