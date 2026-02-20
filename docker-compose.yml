@@ -27,8 +27,9 @@ services:
       - ./interactive_capture_mecheye.py:/app/interactive_capture_mecheye.py:ro
       - ./interactive_capture_mecheye_test.py:/app/interactive_capture_mecheye_test.py:ro
       - ./visualize_voxelmap.py:/app/visualize_voxelmap.py:ro
-      - ./debug_handeye_chain.py:/app/debug_handeye_chain.py:ro
-      - ./debug_capture_suite.py:/app/debug_capture_suite.py:ro
+      - ./debugging:/app/debugging:ro
+      - ./mecheye_robot_multipose_capture.py:/app/mecheye_robot_multipose_capture.py:ro
+      
       
       # === BUILD OUTPUT (read-write) ===
       - ./build:/app/build

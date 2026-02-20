@@ -579,12 +579,12 @@ def move_robot_to_pose(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Interactive multi-pose capture with Mech-Eye (Python SDK)")
     parser.add_argument("--out", type=str, default="captures", help="Output directory")
-    parser.add_argument("--camera-index", type=int, default=None, help="Camera index from discovery")
+    parser.add_argument("--camera-index", type=int, default=0, help="Camera index from discovery")
     parser.add_argument("--frames-per-pose", type=int, default=1, help="Frames to capture per pose")
     parser.add_argument("--interval", type=float, default=0.2, help="Seconds between frames at a pose")
     parser.add_argument("--textured", action="store_true", help="Save textured point clouds")
     parser.add_argument("--ip", type=str, default="192.168.10.75", help="Diana robot IP address")
-    parser.add_argument("--voxel-size", type=float, default=0.005, help="Voxel size in meters (default: 5mm)")
+    parser.add_argument("--voxel-size", type=float, default=0.002, help="Voxel size in meters (default: 5mm)")
     parser.add_argument("--no-voxel", action="store_true", help="Disable real-time voxel mapping")
     parser.add_argument(
         "--verify-frames",
